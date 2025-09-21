@@ -10,7 +10,7 @@ export default function Header() {
           {/* PNG Logo */}
           <div className="w-12 h-12">
             <img
-              src="src/ym_logo.png" // replace with your PNG path
+              src="/ym_logo.png" // replace with your PNG path
               alt="Yours Media Logo"
               className="w-full h-full object-contain"
             />
