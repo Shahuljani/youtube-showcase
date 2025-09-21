@@ -1,42 +1,40 @@
+// src/pages/Admin.jsx
 import React, { useEffect, useState } from 'react'
 import VideoForm from '../components/VideoForm'
 import { parseYouTubeUrl, thumbnailUrl } from '../utils/youtube'
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd'
-
-const STORAGE_KEY = 'youtube_showcase_videos_v1'
+import { db } from '../firebase'
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore'
 
 const ADMIN_CREDENTIALS = {
   username: 'mahesh',
   password: 'yoursmaheshyt@gmail.com'
 }
 
-function load() {
-  const raw = localStorage.getItem(STORAGE_KEY)
-  if (!raw) return []
-  try { return JSON.parse(raw) } catch { return [] }
-}
-
-function save(arr) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(arr))
-}
-
 export default function Admin() {
   const [videos, setVideos] = useState([])
   const [editing, setEditing] = useState(null)
   const [authenticated, setAuthenticated] = useState(false)
-  const [loginAttempted, setLoginAttempted] = useState(false)
   const [inputUsername, setInputUsername] = useState('')
   const [inputPassword, setInputPassword] = useState('')
 
-  useEffect(() => { setVideos(load()) }, [])
-
+  // Fetch videos from Firestore in real-time
   useEffect(() => {
-    const handleContextMenu = (e) => e.preventDefault()
+    const unsubscribe = onSnapshot(collection(db, 'videos'), snapshot => {
+      const vids = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      setVideos(vids)
+    })
+    return () => unsubscribe()
+  }, [])
+
+  // Disable right-click
+  useEffect(() => {
+    const handleContextMenu = e => e.preventDefault()
     document.addEventListener('contextmenu', handleContextMenu)
     return () => document.removeEventListener('contextmenu', handleContextMenu)
   }, [])
 
-  const handleLogin = (e) => {
+  const handleLogin = e => {
     e.preventDefault()
     if (inputUsername === ADMIN_CREDENTIALS.username && inputPassword === ADMIN_CREDENTIALS.password) {
       setAuthenticated(true)
@@ -44,7 +42,6 @@ export default function Admin() {
       alert('Incorrect username or password!')
       setInputPassword('')
     }
-    setLoginAttempted(true)
   }
 
   if (!authenticated) {
@@ -56,7 +53,7 @@ export default function Admin() {
             type="text"
             placeholder="Username"
             value={inputUsername}
-            onChange={(e) => setInputUsername(e.target.value)}
+            onChange={e => setInputUsername(e.target.value)}
             className="w-full mb-4 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400"
             required
           />
@@ -64,7 +61,7 @@ export default function Admin() {
             type="password"
             placeholder="Password"
             value={inputPassword}
-            onChange={(e) => setInputPassword(e.target.value)}
+            onChange={e => setInputPassword(e.target.value)}
             className="w-full mb-6 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400"
             required
           />
@@ -76,22 +73,37 @@ export default function Admin() {
     )
   }
 
-  function handleSave(videoData) {
-    if (editing) {
-      const updated = videos.map(v => v.id === editing.id ? { ...v, ...videoData } : v)
-      setVideos(updated); save(updated); setEditing(null); return
+  // Save or update video in Firestore
+  async function handleSave(videoData) {
+    try {
+      if (editing) {
+        const docRef = doc(db, 'videos', editing.id)
+        await updateDoc(docRef, { title: videoData.title, url: videoData.url })
+        setEditing(null)
+        return
+      }
+
+      const existing = videos.find(v => v.id === videoData.id)
+      if (existing) {
+        const docRef = doc(db, 'videos', existing.id)
+        await updateDoc(docRef, { title: videoData.title, url: videoData.url })
+        return
+      }
+
+      await addDoc(collection(db, 'videos'), { id: videoData.id, title: videoData.title, url: videoData.url })
+    } catch (err) {
+      console.error(err)
     }
-    if (videos.some(v => v.id === videoData.id)) {
-      const updated = [{ id: videoData.id, title: videoData.title, url: videoData.url }, ...videos.filter(v => v.id !== videoData.id)]
-      setVideos(updated); save(updated); return
-    }
-    const newArr = [{ id: videoData.id, title: videoData.title, url: videoData.url }, ...videos]
-    setVideos(newArr); save(newArr)
   }
 
-  function handleDelete(id) {
-    const filtered = videos.filter(v => v.id !== id)
-    setVideos(filtered); save(filtered)
+  // Delete video from Firestore
+  async function handleDelete(id) {
+    try {
+      const docRef = doc(db, 'videos', id)
+      await deleteDoc(docRef)
+    } catch (err) {
+      console.error(err)
+    }
   }
 
   function handleEdit(id) {
@@ -99,21 +111,41 @@ export default function Admin() {
     if (v) setEditing(v)
   }
 
-  function onDragEnd(result) {
+  // Drag and drop reorder (updates Firestore in order)
+  async function onDragEnd(result) {
     if (!result.destination) return
     const arr = Array.from(videos)
     const [moved] = arr.splice(result.source.index, 1)
     arr.splice(result.destination.index, 0, moved)
-    setVideos(arr); save(arr)
+
+    setVideos(arr)
+
+    // Update all video documents with new order
+    try {
+      for (let i = 0; i < arr.length; i++) {
+        const docRef = doc(db, 'videos', arr[i].id)
+        await updateDoc(docRef, { order: i })
+      }
+    } catch (err) {
+      console.error(err)
+    }
   }
 
-  function importSample() {
+  // Import sample videos
+  async function importSample() {
     const sample = [
       { id: 'dQw4w9WgXcQ', title: 'Sample Video 1', url: 'https://youtu.be/dQw4w9WgXcQ' },
       { id: '3JZ_D3ELwOQ', title: 'Sample Video 2', url: 'https://youtu.be/3JZ_D3ELwOQ' }
     ]
-    const combined = [...sample, ...videos.filter(v => !sample.some(s => s.id === v.id))]
-    setVideos(combined); save(combined)
+
+    try {
+      for (const s of sample) {
+        const exists = videos.find(v => v.id === s.id)
+        if (!exists) await addDoc(collection(db, 'videos'), s)
+      }
+    } catch (err) {
+      console.error(err)
+    }
   }
 
   return (
@@ -125,9 +157,6 @@ export default function Admin() {
         <div className="lg:col-span-1">
           <VideoForm onSave={handleSave} initial={editing} />
           <div className="mt-4 flex flex-wrap gap-3">
-            <button onClick={() => { localStorage.clear(); setVideos([]) }} className="px-4 py-2 border rounded-lg hover:bg-gray-100 transition">
-              Clear all
-            </button>
             <button onClick={importSample} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
               Import Sample
             </button>
@@ -136,7 +165,9 @@ export default function Admin() {
 
         {/* Video List */}
         <div className="lg:col-span-2">
-          <div className="mb-2 text-sm text-gray-500">Drag to reorder. Click edit to modify a video. Deleting removes it permanently from localStorage.</div>
+          <div className="mb-2 text-sm text-gray-500">
+            Drag to reorder. Click edit to modify a video. Deleting removes it permanently from the database.
+          </div>
 
           <div className="bg-white rounded-2xl p-4 shadow-lg">
             <DragDropContext onDragEnd={onDragEnd}>
